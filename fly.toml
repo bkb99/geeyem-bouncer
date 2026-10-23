@@ -1,0 +1,43 @@
+# Fly.io. From a copy of this repository:
+#
+#   fly launch --copy-config --no-deploy   # pick your own app name and region
+#   fly deploy
+#   fly logs                               # the setup code is here
+#
+# Then open https://<your app>.fly.dev/setup. Fly provides the HTTPS.
+# One machine, always on (a bouncer that sleeps is not a bouncer), with a
+# 1 GB volume for the database. See README.md, "Deploy".
+
+app = "geeyem-bouncer"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # Fly's proxy is the only thing that can reach the port, so its
+  # X-Forwarded-* headers say how the browser arrived.
+  RELAY_TRUST_PROXY = "1"
+
+[mounts]
+  source = "geeyem_data"
+  destination = "/data"
+  initial_size = "1gb"
+
+[http_service]
+  internal_port = 8765
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "15s"
+    interval = "30s"
+    timeout = "5s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

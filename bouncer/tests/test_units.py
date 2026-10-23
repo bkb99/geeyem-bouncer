@@ -5260,7 +5260,7 @@ def test_pairing_codes():
 def test_deploy_script():
     """deploy.sh installs requirements into the remote venv before anything
     is swapped, and gates on every test script. Read, never run: it sshes."""
-    print("deploy.sh: pip before the swap, all five test scripts")
+    print("deploy.sh: pip before the swap, all six test scripts")
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if not os.path.exists(os.path.join(here, "deploy.sh")):
         print("  (no deploy.sh in this checkout; skipped)")
@@ -5282,7 +5282,7 @@ def test_deploy_script():
           [w for w in ('mv "$REMOTE/relay"', "install_web", "systemctl restart")
            if w in remote[:pip]], [])
     tests = sorted(f for f in os.listdir(os.path.join(here, "tests")) if f.startswith("test_"))
-    check("there are five test scripts", len(tests), 5)
+    check("there are six test scripts", len(tests), 6)
     check("the deploy is gated on every one of them",
           [t for t in tests if t[:-3] not in script], [])
 

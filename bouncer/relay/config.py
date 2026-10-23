@@ -150,6 +150,17 @@ class Config:
     # use instead. Apple's push service refuses a subject it cannot read as a
     # mailto: or https: address. Also RELAY_WEBPUSH_SUBJECT.
     webpush_subject: str | None = None
+    # Believe the forwarding headers (X-Forwarded-Proto, -For, -Host) from
+    # whatever connects, not only from this machine. For a bouncer whose port
+    # nothing can reach except the hosting platform's own proxy: Fly.io,
+    # Railway, Render, or a Docker network with Caddy in front. Never on a
+    # bouncer whose port is open to the internet, where anyone could send
+    # them. Also RELAY_TRUST_PROXY=1.
+    trust_proxy: bool = False
+    # On first boot with no token, serve /setup behind a one-time code
+    # printed to the log (relay/firstrun.py). Off means a token is minted
+    # with `python -m relay token new`, as before. Also RELAY_FIRST_RUN=0.
+    first_run_setup: bool = True
 
     @classmethod
     def load(cls, path: str | os.PathLike | None = None) -> "Config":
@@ -193,6 +204,10 @@ class Config:
             cfg.apns_use_sandbox = v.strip().lower() not in ("0", "false", "no")
         if v := os.environ.get("RELAY_WEBPUSH_SUBJECT"):
             cfg.webpush_subject = v
+        if v := os.environ.get("RELAY_TRUST_PROXY"):
+            cfg.trust_proxy = v.strip().lower() not in ("0", "false", "no")
+        if v := os.environ.get("RELAY_FIRST_RUN"):
+            cfg.first_run_setup = v.strip().lower() not in ("0", "false", "no")
 
         # Relative db paths resolve against the config file's directory, not the
         # process's cwd -- a one-off script run from elsewhere would otherwise

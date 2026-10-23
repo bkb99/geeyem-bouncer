@@ -42,6 +42,7 @@ from aiohttp import WSCloseCode, WSMsgType, web
 from . import protocol as P
 from . import APP_NAME
 from .config import Config
+from . import firstrun
 from .store import PUSH_SOUNDS
 from .hub import Hub
 from .ircproto import strip_formatting
@@ -669,12 +670,26 @@ def _from_loopback(request: web.Request) -> bool:
         return False
 
 
+# Set from config.json's `trust_proxy` (see _from_proxy).
+TRUST_PROXY = web.AppKey("trust_proxy", bool)
+
+
+def _from_proxy(request: web.Request) -> bool:
+    """Is this connection from the proxy in front of the bouncer, whose
+    forwarding headers say how the browser arrived? From this machine, always
+    (cloudflared, a local nginx). From anywhere, only with `trust_proxy` on:
+    on Fly.io, Railway or Render, or in a Docker network, the platform's proxy
+    is the only thing that can reach the port, and it does not connect from
+    loopback."""
+    return _from_loopback(request) or request.app.get(TRUST_PROXY) is True
+
+
 def _forwarded_scheme(request: web.Request) -> str | None:
     """"https" or "http" for the scheme the browser used to reach the tunnel,
     or None when nobody in front said (a local rig, the iOS app over
     WireGuard). Cloudflare sets both X-Forwarded-Proto and Cf-Visitor on
     every request it proxies, overwriting what the client sent."""
-    if not _from_loopback(request):
+    if not _from_proxy(request):
         return None
     proto = request.headers.get("X-Forwarded-Proto", "").split(",")[0].strip().lower()
     visitor = request.headers.get("Cf-Visitor", "")
@@ -687,6 +702,24 @@ def _forwarded_scheme(request: web.Request) -> str | None:
     if "http" in (proto, visitor):
         return "http"
     return None
+
+
+def _public_host(request: web.Request) -> str:
+    """The host a link back to this bouncer should name: X-Forwarded-Host
+    from the proxy in front (_from_proxy), else Host. Behind cloudflared,
+    Host is 127.0.0.1:8770, which is nobody's way in."""
+    forwarded = request.headers.get("X-Forwarded-Host") if _from_proxy(request) else None
+    return _safe_host((forwarded or "").split(",")[0]) or _safe_host(request.host)
+
+
+def _link_scheme(request: web.Request, host: str) -> str:
+    """"https" for a link back to this bouncer, except on a rig: "http" only
+    for plain http from this machine, to a loopback name, with nothing in
+    front saying it was https."""
+    if (not request.secure and _forwarded_scheme(request) is None
+            and _from_loopback(request) and _loopback_host(host)):
+        return "http"
+    return "https"
 
 
 # What every response carries, whatever route made it (errors included).
@@ -773,6 +806,7 @@ class Gateway:
         # handle_ws.)
         self.app = web.Application(middlewares=[self._https_only],
                                    client_max_size=MAX_PAIR_BODY)
+        self.app[TRUST_PROXY] = bool(config.trust_proxy)
         self.app.on_response_prepare.append(self._security_headers)
         self.app.router.add_get("/health", self.handle_health)
         self.app.router.add_get("/ws", self.handle_ws)
@@ -780,6 +814,10 @@ class Gateway:
         # The one route that takes a POST, and the one that hands out a
         # credential; see handle_pair.
         self.app.router.add_post("/pair", self.handle_pair)
+        # First run: the page that mints the first token, open only while
+        # there is none (see open_setup and relay/firstrun.py).
+        self.app.router.add_get("/setup", self.handle_setup_page)
+        self.app.router.add_post("/setup", self.handle_setup)
         # A link card's picture, fetched by the bouncer so the phone never
         # contacts the site (see relay/previews.py), and a one-time log
         # download. Both are addressed by an unguessable path rather than the
@@ -849,6 +887,17 @@ class Gateway:
         # no business outliving a restart, and nothing is lost when it does
         # not -- the person asks for another.
         self._pairings: collections.OrderedDict[str, PairTicket] = collections.OrderedDict()
+        # The first-run setup, while this bouncer has no token (open_setup).
+        self.setup: firstrun.FirstRun | None = None
+
+    def open_setup(self) -> bool:
+        """Serve /setup if no device can sign in yet, and print its code.
+        Called once at startup (app.py); does nothing when a token exists."""
+        if self.setup is not None or self.store.active_token_ids():
+            return False
+        self.setup = firstrun.FirstRun(self.store)
+        self.setup.announce(force=True)
+        return True
 
     async def start(self) -> None:
         # shutdown_timeout is the second half of the fix in stop(): even with
@@ -1248,6 +1297,11 @@ class Gateway:
         on every load that was not a 304. Compressed once per version of the
         page and kept beside its ETag (_read_index), not once per request.
         """
+        if self.setup is not None and self.setup.open:
+            # Nobody can sign in yet, so the sign-in page would only ask for
+            # a token that does not exist. Not permanent: it lasts until the
+            # first token is made.
+            raise web.HTTPFound("/setup")
         index = self._web_root / "index.html"
         try:
             body, script_hashes, etag, gzipped = self._read_index(index)
@@ -1433,13 +1487,16 @@ class Gateway:
         once; one more pushes the oldest out rather than being refused, so
         opening "Add a device" a sixth time still shows a code that works --
         and the one it replaced answers "expired", which is true."""
+        return self._make_pairing(label, client.host, client.token_id)
+
+    def _make_pairing(self, label: str, host: str, token_id: int) -> PairTicket:
         self._expire_pairings()
         while len(self._pairings) >= MAX_PAIRINGS:
             self._pairings.popitem(last=False)
         code = ""
         while not code or code in self._pairings:
             code = "".join(secrets.choice(PAIR_ALPHABET) for _ in range(PAIR_CODE_LENGTH))
-        ticket = PairTicket(code, label, client.host, client.token_id, time.monotonic())
+        ticket = PairTicket(code, label, host, token_id, time.monotonic())
         self._pairings[code] = ticket
         return ticket
 
@@ -1514,6 +1571,124 @@ class Gateway:
         log.info("paired a new device (%r) with a code made under token %d",
                  label, ticket.token_id)
         return web.json_response({"token": token, "host": ticket.host, "label": label})
+
+    # --- first run -----------------------------------------------------------
+
+    def _setup_response(self, page: str, status: int = 200) -> web.Response:
+        """A setup page: no-store (one of them carries a token), and a policy
+        that lets it run its own copy buttons and post only to itself."""
+        scripts = " ".join(f"'sha256-{d}'" for d in inline_script_hashes(page)) or "'none'"
+        return web.Response(text=page, status=status, content_type="text/html", headers={
+            "Content-Security-Policy": (
+                f"default-src 'none'; script-src {scripts}; style-src 'unsafe-inline'; "
+                "form-action 'self'; base-uri 'none'; frame-ancestors 'none'"),
+            "Cache-Control": "no-store",
+        })
+
+    def _setup_networks(self) -> list[str]:
+        return [s.config.name for s in self.hub.sessions.values()]
+
+    async def handle_setup_page(self, request: web.Request) -> web.Response:
+        """GET /setup: the form while no device can sign in, else a page that
+        says it is done (404, so nothing mistakes it for a form)."""
+        setup = self.setup
+        if setup is None or not setup.open:
+            return self._setup_response(firstrun.closed_page(), status=404)
+        # Whoever opened the page is probably about to look for the code.
+        setup.announce()
+        return self._setup_response(firstrun.form_page(networks=self._setup_networks()))
+
+    async def handle_setup(self, request: web.Request) -> web.Response:
+        """POST /setup: the setup code, the first device's name and,
+        optionally, an IRC network. Mints the first token and shows it.
+
+        The same doors as /pair, in the same order and for the same reason:
+        no plain http through a proxy, no foreign Origin, and the throttle
+        before the code, which counts a wrong one like a wrong token. Nothing
+        else in the form is read until the code is right, and nothing is
+        stored until all of it is: a refusal leaves the code good for the
+        next try.
+        """
+        setup = self.setup
+        if setup is None or not setup.open:
+            return self._setup_response(firstrun.closed_page(), status=404)
+        self._plain_http_refused(request)
+        if not self._origin_allowed(request):
+            log.warning("refused a setup from origin %r (host %r)",
+                        request.headers.get("Origin"), request.host)
+            raise web.HTTPForbidden(text="this page may not set up this bouncer")
+        form = await request.post()
+        values = {k: str(form.get(k, "")) for k in firstrun.FORM_FIELDS}
+        networks = self._setup_networks()
+
+        def refuse(error: str, status: int) -> web.Response:
+            return self._setup_response(
+                firstrun.form_page(values, error, networks), status=status)
+
+        peer = self._peer(request)
+        if self._rate_limited(peer):
+            log.warning("auth rate limit hit for %s (setup)", peer)
+            return refuse("Too many attempts. Wait a minute and try again.", 429)
+        if not setup.check(values["code"]):
+            self._record_failure(peer)
+            log.warning("rejected a setup code from %s", peer)
+            return refuse("That setup code is not right. Copy it from the bouncer's log.", 403)
+        if setup.busy:
+            return refuse("Setup is already being finished. Reload in a moment.", 409)
+        label = clean_label(values["label"])
+        if label is None:
+            return refuse(f"Give this device a name of 1 to {MAX_LABEL} characters.", 400)
+
+        choice = values["network"] or "none"
+        frame: dict | None = None
+        if choice in firstrun.PRESETS:
+            name, host, port, tls = firstrun.PRESETS[choice]
+            frame = {"name": name, "host": host, "port": port, "tls": tls}
+        elif choice == "other":
+            host = values["host"].strip()
+            frame = {"name": host, "host": host, "port": values["port"].strip() or None,
+                     "tls": bool(values["tls"])}
+        elif choice != "none":
+            return refuse("Pick a network from the list.", 400)
+
+        setup.busy = True
+        try:
+            network = None
+            if frame is not None:
+                frame["nick"] = values["nick"].strip()
+                frame["channels"] = values["channels"].replace(",", " ").split()
+                if self.hub.add_network is None:
+                    return refuse("This bouncer cannot add networks.", 400)
+                try:
+                    fields = await network_fields(
+                        frame, adding=True, allow_private_hosts=self.config.allow_private_hosts)
+                    fields.setdefault("channels", [])
+                    added = await self.hub.add_network(**fields)
+                except ValueError as exc:
+                    return refuse(str(exc), 400)
+                network = added.get("name") if isinstance(added, dict) else frame["name"]
+            # A token made some other way while the network was being added
+            # closed setup; this one is not owed a second.
+            if not setup.open:
+                return self._setup_response(firstrun.closed_page(), status=404)
+            token = self.store.create_token(label)
+            setup.finish()
+        finally:
+            setup.busy = False
+        token_id = self.store.token_id(token)
+        host = _public_host(request)
+        scheme = _link_scheme(request, host)
+        # The browser that did the setup is a device of its own: a pairing
+        # code for it, in the fragment, as `pair` makes one.
+        ticket = self._make_pairing("Web browser", host, token_id)
+        log.info("first run finished: a token for %r%s", label,
+                 f" and the network {network}" if network else "")
+        return self._setup_response(firstrun.done_page(
+            host=host if scheme == "https" else f"{scheme}://{host}",
+            token=token, label=label,
+            link=firstrun.connect_link(host, token, scheme),
+            web_url=f"{scheme}://{host}/#pair={ticket.code}",
+            network=network))
 
     async def _protect_upload_links(self, text: str) -> None:
         """Mark the uploads a line links to as uncacheable (uploads.CACHE_CONTROL).
@@ -1621,13 +1796,16 @@ class Gateway:
         able to pick whose bucket its failures went into.
         """
         remote = request.remote or "?"
-        try:
-            local = ipaddress.ip_address(remote).is_loopback
-        except ValueError:
-            local = False
-        if local:
+        if _from_loopback(request):
             forwarded = (request.headers.get("CF-Connecting-IP")
                          or request.headers.get("X-Forwarded-For", "").split(",")[0].strip())
+            if forwarded:
+                return forwarded
+        elif _from_proxy(request):
+            # A platform's proxy appends the address it saw to whatever the
+            # caller sent, so the last entry is the one it vouches for; the
+            # first is whatever the caller typed.
+            forwarded = request.headers.get("X-Forwarded-For", "").split(",")[-1].strip()
             if forwarded:
                 return forwarded
         return remote
@@ -1645,7 +1823,8 @@ class Gateway:
         "Own" is the Host the request came in on (the tunnel passes the public
         hostname through), or X-Forwarded-Host from a proxy that rewrites
         Host, or anything in config.json's `allowed_origins`. X-Forwarded-Host
-        is believed only from loopback, like every other forwarding header
+        is believed only from the proxy in front (_from_proxy: loopback, or
+        anywhere with `trust_proxy`), like every other forwarding header
         here (_peer, _forwarded_scheme): from anywhere else it is whatever the
         caller typed, and the check is only as good as what it believes.
         """
@@ -1656,7 +1835,7 @@ class Gateway:
         if host is None:
             return False
         own = {_host_key(request.host or "")}
-        forwarded = request.headers.get("X-Forwarded-Host") if _from_loopback(request) else None
+        forwarded = request.headers.get("X-Forwarded-Host") if _from_proxy(request) else None
         if forwarded:
             own.add(_host_key(forwarded.split(",")[0]))
         allowed = {_origin_host(o) for o in self.config.allowed_origins}
@@ -1732,15 +1911,8 @@ class Gateway:
         # loopback name over plain http with nobody in front saying otherwise.
         # A pairing link carries a code that becomes a token; the only place
         # it may say http is where there is no https to say.
-        # X-Forwarded-Host first, from a proxy on this machine that rewrites
-        # Host (believed only from loopback, as in _origin_allowed): behind
-        # one, Host is 127.0.0.1:8770, which is nobody's way in.
-        forwarded = request.headers.get("X-Forwarded-Host") if _from_loopback(request) else None
-        client.host = (_safe_host((forwarded or "").split(",")[0])
-                       or _safe_host(request.host))
-        if (not request.secure and _forwarded_scheme(request) is None
-                and _from_loopback(request) and _loopback_host(client.host)):
-            client.link_scheme = "http"
+        client.host = _public_host(request)
+        client.link_scheme = _link_scheme(request, client.host)
         client.start()
         # Held from before it joins the hub until its burst is queued, so no
         # live frame can land inside the burst (see Client.hold).

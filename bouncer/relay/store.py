@@ -1626,6 +1626,14 @@ class Store:
         )
         return token
 
+    def token_id(self, token: str) -> int | None:
+        """The id of an active token, without counting it as used: for the
+        bouncer itself, which has just made it (first run)."""
+        row = self.db.execute(
+            "SELECT id FROM tokens WHERE token_hash=? AND revoked=0", (self.hash_token(token),)
+        ).fetchone()
+        return row["id"] if row else None
+
     def verify_token(self, token: str) -> int | None:
         row = self.db.execute(
             "SELECT id FROM tokens WHERE token_hash=? AND revoked=0", (self.hash_token(token),)

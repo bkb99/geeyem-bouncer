@@ -10,10 +10,72 @@ and anyone can run one.
 Your messages and history stay on your machine. Nothing reaches the app's
 developer.
 
-You need a machine that stays on (a home server, a Raspberry Pi, or a small
-VPS), Python 3.11 or newer, and about twenty minutes.
+## Quick start (about two minutes)
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/bkb99/geeyem-bouncer)
+
+Each option below runs the bouncer in a container with HTTPS and a disk for
+your history. It runs in your own account; nothing is sent anywhere else.
+
+**Render:** press the button above. It uses `render.yaml`: a Starter
+instance (about $7 a month; a free one goes to sleep, which drops you from
+IRC) with a 1 GB disk.
+
+**Fly.io:** install [flyctl](https://fly.io/docs/flyctl/install/), sign in, then
+
+```bash
+git clone https://github.com/bkb99/geeyem-bouncer.git && cd geeyem-bouncer
+fly launch --copy-config --no-deploy    # choose your own app name and region
+fly deploy
+```
+
+**Railway:** New Project → Deploy from GitHub repo → your fork of this
+repository. On the service, add a volume mounted at `/data`, add the
+variables `RELAY_TRUST_PROXY=1` and `PORT=8765`, and under Networking,
+generate a domain.
+
+<!-- A "Deploy on Railway" button needs a template published from a Railway
+account (railway.com/new/template/<code>). Publish one from a project set up
+as above, then add its button here. -->
+
+**Docker, on your own server:**
+
+```bash
+git clone https://github.com/bkb99/geeyem-bouncer.git && cd geeyem-bouncer
+GEEYEM_DOMAIN=irc.example.com docker compose --profile https up -d
+```
+
+`irc.example.com` is a DNS name pointing at the server, with ports 80 and
+443 open; Caddy gets the certificate. Leave out `GEEYEM_DOMAIN` and
+`--profile https` to put your own proxy in front of `127.0.0.1:8765` instead
+(step 4 below).
+
+### Then sign in
+
+1. Open your bouncer's address (for example `https://your-app.fly.dev`). It
+   shows a setup page.
+2. Find the **setup code** in the bouncer's log: `fly logs`, the Logs tab on
+   Render or Railway, or `docker compose logs bouncer`. It is on a line like
+   `first run: ... enter the setup code ABCD-EFGH-JKMN`.
+3. Enter the code, pick your IRC network, and type a nickname.
+4. The page shows a QR code, a link, and your access token. In geeyem, enter
+   the bouncer address and the token, and tap Connect. (Scanning the QR code
+   will open the app once it supports `geeyem://connect` links; until then,
+   copy the two fields.)
+
+The setup page works once. Only someone who can read your log can use it.
+To add more devices later, use **Settings → Devices → Add a device** in the app.
+
+The deploy files set `RELAY_TRUST_PROXY=1`, so the bouncer believes the
+platform's `X-Forwarded-*` headers. Don't set it on a bouncer whose port is
+open to the internet.
 
 ---
+
+## Run it by hand
+
+You need a machine that stays on (a home server, a Raspberry Pi, or a small
+VPS), Python 3.11 or newer, and about twenty minutes.
 
 ## 1. Install
 
@@ -55,6 +117,9 @@ cd bouncer
 .venv/bin/python -m relay token new "iPhone"    # copy the token; it is shown once
 .venv/bin/python -m relay run
 ```
+
+Or skip `token new`: started with no token, the bouncer prints a setup code
+to its log and serves the setup page at `/setup`, as in the quick start.
 
 The bouncer listens on `127.0.0.1:8765`.
 
@@ -109,7 +174,8 @@ Change the paths and the user to match your machine.
 
 ## Backups
 
-Your history is in `bouncer/relay.db`, which is plain SQLite and not encrypted.
+In a container, your history is `/data/relay.db` on the volume. By hand, it
+is in `bouncer/relay.db`, which is plain SQLite and not encrypted.
 To copy it while the bouncer is running, use:
 
 ```bash
@@ -130,6 +196,13 @@ starting the bouncer, so the apps reload their history.
 
 Push notifications to the App Store build are not available from your own
 bouncer yet. Everything else works without them.
+
+## Tests
+
+```bash
+cd bouncer
+for t in tests/test_*.py; do .venv/bin/python "$t" || break; done
+```
 
 ## Help
 

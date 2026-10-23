@@ -1,0 +1,22 @@
+# Render Blueprint, for the "Deploy to Render" button in README.md.
+# A paid instance: a free one sleeps after 15 idle minutes, which would drop
+# you from IRC, and only paid instances can keep a disk.
+services:
+  - type: web
+    name: geeyem-bouncer
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    numInstances: 1
+    envVars:
+      # Render's proxy is the only thing that can reach the port.
+      - key: RELAY_TRUST_PROXY
+        value: "1"
+      # Where Render sends traffic; the image listens there.
+      - key: PORT
+        value: "8765"
+    disk:
+      name: geeyem-data
+      mountPath: /data
+      sizeGB: 1

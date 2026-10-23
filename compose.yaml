@@ -1,0 +1,58 @@
+# The geeyem bouncer with Docker Compose, on a machine you run.
+#
+#   docker compose up -d                      # the bouncer, on 127.0.0.1:8765
+#   docker compose logs bouncer               # the setup code is here
+#
+# For HTTPS with nothing else to install, point a DNS name at the machine,
+# open ports 80 and 443, and add Caddy, which gets and renews the
+# certificate itself:
+#
+#   GEEYEM_DOMAIN=irc.example.com docker compose --profile https up -d
+#
+# Then open https://irc.example.com/setup. Or keep your own nginx or
+# Cloudflare Tunnel in front of 127.0.0.1:8765 instead (docs/SELF-HOSTING.md).
+
+services:
+  bouncer:
+    build: .
+    image: geeyem-bouncer
+    restart: unless-stopped
+    environment:
+      # The only things that reach the port are Caddy, on the network below,
+      # and whatever on this machine you point at 127.0.0.1:8765, so their
+      # X-Forwarded-* headers are believed. Never publish the port to the
+      # internet with this on: anyone could then say they came over https.
+      RELAY_TRUST_PROXY: "1"
+    env_file:
+      - path: .env               # optional: Q password, push keys, bucket
+        required: false
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - geeyem-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    # Only what docker-entrypoint.sh needs to hand /data to uid 10001 and
+    # become it. The bouncer itself runs with none.
+    cap_add: [CHOWN, SETUID, SETGID]
+    security_opt:
+      - no-new-privileges:true
+
+  caddy:
+    image: caddy:2.10
+    profiles: [https]
+    restart: unless-stopped
+    command: caddy reverse-proxy --from "${GEEYEM_DOMAIN:-}" --to bouncer:8765
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data
+    depends_on:
+      - bouncer
+
+volumes:
+  geeyem-data:
+  caddy-data:

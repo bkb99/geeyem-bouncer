@@ -1,0 +1,11 @@
+# An allow-list: only what the image copies is sent to the builder, so no
+# database, .env, key or client source can end up in a layer by accident.
+*
+!bouncer/requirements.txt
+!bouncer/relay/**
+!web/index.html
+!web/sw.js
+!web/*.png
+!web/*.woff2
+!docker-entrypoint.sh
+bouncer/relay/__pycache__

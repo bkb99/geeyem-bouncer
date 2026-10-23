@@ -137,6 +137,9 @@ class Relay:
             log.info("no networks configured; waiting for a client to add one")
 
         await self.gateway.start()
+        if self.config.first_run_setup:
+            # After start, so the page answers by the time its code is printed.
+            self.gateway.open_setup()
         for session in self.sessions:
             session.start()
         # Nobody is attached yet, so auto-away starts counting from now.
