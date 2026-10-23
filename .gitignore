@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.db
+*.db-wal
+*.db-shm
+bouncer/config.json
+bouncer/.env
+*.p8
+AuthKey_*
+.DS_Store

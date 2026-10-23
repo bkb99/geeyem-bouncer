@@ -1,0 +1,48 @@
+{
+  "_comment": [
+    "Copy to config.json. THE DEFAULT POINTS AT tools/fakeircd.py, NOT a real network.",
+    "IRC publishes the host of every client that connects, so running this from a home",
+    "machine announces your home IP to everyone in the channel. Point it at a real",
+    "network only when it runs on the VPS, or once Q auth + usermode +x is in place.",
+    "See docs/ARCHITECTURE.md, 'Upstream credentials and host exposure'.",
+    "Start the local server first:  python tools/fakeircd.py --port 6699"
+  ],
+  "listen_host": "127.0.0.1",
+  "listen_port": 8765,
+  "db_path": "relay.db",
+  "initial_backlog": 50,
+  "networks": [
+    {
+      "slug": "local",
+      "name": "Local test server",
+      "host": "127.0.0.1",
+      "port": 6699,
+      "tls": false,
+      "nick": "geyem",
+      "alt_nicks": [
+        "geyem_",
+        "geyem__"
+      ],
+      "username": "geyem",
+      "realname": "Geyem (dev)",
+      "channels": [
+        "#testing"
+      ],
+      "highlight_words": [],
+      "enabled": true
+    }
+  ],
+  "_quakenet_example": {
+    "slug": "quakenet",
+    "name": "QuakeNet",
+    "host": "irc.quakenet.org",
+    "port": 6667,
+    "tls": false,
+    "nick": "changeme",
+    "channels": [
+      "#hangout"
+    ],
+    "enabled": true,
+    "_warning": "Exposes the host of whatever machine runs this. VPS only."
+  }
+}

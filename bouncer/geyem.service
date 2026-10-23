@@ -1,0 +1,48 @@
+# systemd unit for the bouncer. Copy to /etc/systemd/system/geyem.service,
+# change User and the paths to match your machine, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now geyem
+
+[Unit]
+Description=geeyem IRC bouncer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=geeyem
+WorkingDirectory=/opt/geeyem-bouncer/bouncer
+# Secrets (APNs key path and ids, upload bucket credentials) go here, not in
+# config.json.
+EnvironmentFile=-/opt/geeyem-bouncer/bouncer/.env
+ExecStart=/opt/geeyem-bouncer/bouncer/.venv/bin/python -m relay run
+Restart=always
+RestartSec=5
+# The process handles SIGTERM by sending a real QUIT upstream, so the channel
+# sees the bouncer leave rather than a ping timeout. Give it room to do that.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+
+# Hardening: outbound TCP, one loopback listener, and read-write access to its
+# own directory are all it needs.
+NoNewPrivileges=yes
+UMask=0077
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/geeyem-bouncer/bouncer
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+
+# A healthy bouncer sits well under these.
+MemoryHigh=150M
+MemoryMax=250M
+
+[Install]
+WantedBy=multi-user.target

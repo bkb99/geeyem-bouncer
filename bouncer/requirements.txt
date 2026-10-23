@@ -1,0 +1,35 @@
+# The gateway. Gives websocket server, websocket client (for tools/wsclient.py)
+# and plain HTTP in one asyncio-native package, so there is no ASGI server layer
+# to configure and no second dependency for the test client.
+aiohttp>=3.14.3
+# The floor is security, not features (checked against OSV 2026-09-22). Older
+# releases carry advisories for exactly how this is used: the server behind
+# the tunnel (request smuggling through a websocket upgrade, fixed 3.14.2;
+# unbounded pipelined requests and oversized partial websocket frames,
+# 3.14.1) and the link-preview client reading strangers' servers (a gzip
+# bomb in auto-decompress, 3.13.3; an out-of-bounds read in the response
+# parser's error path, 3.14.3).
+
+# APNs. HTTP/2 is mandatory -- Apple refuses HTTP/1.1 -- and the provider token
+# is an ES256 JWT, which needs a real crypto library to sign. Both are only
+# reached when APNs is actually configured; with no key the push layer logs and
+# returns, so a deployment that does not want notifications does not need these
+# to work.
+httpx[http2]>=0.27
+cryptography>=48.0.1
+# Also a security floor: the wheels before 48.0.1 bundle an OpenSSL with
+# published advisories, and this signs the APNs and VAPID tokens and does the
+# Web Push ECDH.
+
+# Everything else the bouncer needs is in the standard library: asyncio for the
+# connections, sqlite3 for the backlog, ssl for TLS networks, json for the wire.
+#
+# NOT here on purpose:
+#   an IRC library  -- the protocol is hand-rolled, see relay/ircproto.py
+#   a push library  -- APNs is hand-rolled in relay/apns.py: a few dozen lines
+#                      of JWT and one POST per device, against a library that
+#                      would hide the error codes that matter
+#   boto3           -- OPTIONAL, and only imported when file uploads are
+#                      configured (see relay/uploads.py). A bouncer with no
+#                      bucket never touches it, so it is not required here.
+#                      Install with: pip install boto3
